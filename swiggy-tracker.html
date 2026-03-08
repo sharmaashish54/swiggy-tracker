@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<meta charset="UTF-8">
+<title>Swiggy OCR Dashboard</title>
+
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+
+body{
+font-family:Arial;
+background:#f2f2f2;
+padding:30px;
+}
+
+.container{
+max-width:1000px;
+margin:auto;
+background:white;
+padding:25px;
+border-radius:10px;
+}
+
+button{
+padding:10px 16px;
+background:#ff5200;
+color:white;
+border:none;
+border-radius:6px;
+cursor:pointer;
+}
+
+table{
+width:100%;
+border-collapse:collapse;
+margin-top:20px;
+}
+
+th,td{
+border:1px solid #ddd;
+padding:10px;
+}
+
+th{
+background:#fafafa;
+}
+
+#log{
+background:black;
+color:#0f0;
+padding:10px;
+height:120px;
+overflow:auto;
+font-size:12px;
+margin-top:15px;
+}
+
+.insights{
+background:#fff7ed;
+padding:15px;
+margin-top:20px;
+border-radius:8px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h2>Swiggy OCR Expense Analyzer</h2>
+
+<input type="file" id="fileInput">
+
+<br><br>
+
+<button onclick="scan()">Scan Screenshot</button>
+
+<img id="preview" style="max-width:100%;margin-top:15px">
+
+<canvas id="canvas" style="display:none;"></canvas>
+
+<div id="log"></div>
+
+<h3>Orders</h3>
+
+<table>
+
+<thead>
+<tr>
+<th>Restaurant</th>
+<th>Date</th>
+<th>Amount</th>
+<th>Category</th>
+</tr>
+</thead>
+
+<tbody id="results"></tbody>
+
+</table>
+
+<div class="insights">
+
+<h3>Quick Insights</h3>
+
+<div id="insights"></div>
+
+<h3>Monthly Summary</h3>
+
+<table>
+<thead>
+<tr>
+<th>Month</th>
+<th>Orders</th>
+<th>Spend</th>
+</tr>
+</thead>
+
+<tbody id="monthly"></tbody>
+</table>
+
+</div>
+
+</div>
+
+<script>
+
+function log(m){
+document.getElementById("log").innerHTML+=m+"<br>";
+}
+
+function categorize(v){
+
+v=v.toLowerCase();
+
+if(v.includes("pohe")) return "Breakfast";
+
+if(v.includes("pizza")||v.includes("burger")) return "Fast Food";
+
+if(v.includes("veg")) return "Restaurant";
+
+return "Food";
+}
+
+
+
+function preprocess(canvas){
+
+let ctx=canvas.getContext("2d");
+
+let img=ctx.getImageData(0,0,canvas.width,canvas.height);
+
+let d=img.data;
+
+for(let i=0;i<d.length;i+=4){
+
+let avg=(d[i]+d[i+1]+d[i+2])/3;
+
+let val=avg>150?255:0;
+
+d[i]=val;
+d[i+1]=val;
+d[i+2]=val;
+
+}
+
+ctx.putImageData(img,0,0);
+
+}
+
+
+
+function parse(text){
+
+let lines=text.split("\n").map(x=>x.trim()).filter(x=>x);
+
+let orders=[];
+
+let vendor=null;
+let date=null;
+
+for(let i=0;i<lines.length;i++){
+
+let l=lines[i];
+let lower=l.toLowerCase();
+
+
+
+if(/^[A-Z][A-Za-z\s&']{3,40}$/.test(l) &&
+!lower.includes("order") &&
+!lower.includes("total")){
+
+vendor=l;
+
+}
+
+
+
+let dm=l.match(/(Mon|Tue|Wed|Thu|Fri|Sat|Sun).*202\d/i);
+
+if(dm){
+
+let d=new Date(dm[0]);
+
+if(!isNaN(d)) date=d.toISOString().split("T")[0];
+
+}
+
+
+
+if(lower.includes("total")){
+
+let m=l.match(/\d{2,5}/);
+
+if(!m && lines[i+1]) m=lines[i+1].match(/\d{2,5}/);
+
+if(m){
+
+orders.push({
+
+vendor:vendor||"Unknown",
+
+date:date||new Date().toISOString().split("T")[0],
+
+amount:parseFloat(m[0]),
+
+category:categorize(vendor||"")
+
+});
+
+}
+
+}
+
+}
+
+
+
+let seen=new Set();
+
+orders=orders.filter(o=>{
+
+let key=o.vendor+o.amount+o.date;
+
+if(seen.has(key)) return false;
+
+seen.add(key);
+
+return true;
+
+});
+
+return orders;
+
+}
+
+
+
+function showOrders(orders){
+
+let tbody=document.getElementById("results");
+
+tbody.innerHTML="";
+
+orders.forEach(o=>{
+
+let tr=document.createElement("tr");
+
+tr.innerHTML=`
+<td>${o.vendor}</td>
+<td>${o.date}</td>
+<td>₹${o.amount}</td>
+<td>${o.category}</td>
+`;
+
+tbody.appendChild(tr);
+
+});
+
+}
+
+
+
+function generateInsights(orders){
+
+let totalOrders=orders.length;
+
+let totalSpent=orders.reduce((a,b)=>a+b.amount,0);
+
+let avg=Math.round(totalSpent/totalOrders);
+
+
+
+let now=new Date();
+
+let last30=new Date();
+
+last30.setDate(now.getDate()-30);
+
+
+
+let recent=orders.filter(o=>new Date(o.date)>=last30);
+
+let recentSpend=recent.reduce((a,b)=>a+b.amount,0);
+
+
+
+let monthly={};
+
+orders.forEach(o=>{
+
+let d=new Date(o.date);
+
+let key=d.toLocaleString("default",{month:"short",year:"numeric"});
+
+if(!monthly[key]) monthly[key]={orders:0,spend:0};
+
+monthly[key].orders++;
+
+monthly[key].spend+=o.amount;
+
+});
+
+
+
+document.getElementById("insights").innerHTML=`
+
+<b>Total Orders:</b> ${totalOrders}<br>
+
+<b>Total Spent:</b> ₹${totalSpent}<br>
+
+<b>Average per order:</b> ₹${avg}<br><br>
+
+<b>Last 30 Days Spend:</b> ₹${recentSpend}
+
+`;
+
+
+
+let tbody=document.getElementById("monthly");
+
+tbody.innerHTML="";
+
+
+
+Object.keys(monthly).forEach(m=>{
+
+let tr=document.createElement("tr");
+
+tr.innerHTML=`
+
+<td>${m}</td>
+<td>${monthly[m].orders}</td>
+<td>₹${monthly[m].spend}</td>
+
+`;
+
+tbody.appendChild(tr);
+
+});
+
+}
+
+
+
+async function scan(){
+
+try{
+
+let file=document.getElementById("fileInput").files[0];
+
+if(!file){
+
+alert("Upload screenshot first");
+
+return;
+
+}
+
+
+
+log("Loading image...");
+
+let img=new Image();
+
+img.src=URL.createObjectURL(file);
+
+document.getElementById("preview").src=img.src;
+
+await img.decode();
+
+
+
+let canvas=document.getElementById("canvas");
+
+canvas.width=img.width;
+
+canvas.height=img.height;
+
+let ctx=canvas.getContext("2d");
+
+ctx.drawImage(img,0,0);
+
+
+
+log("Preprocessing image...");
+
+preprocess(canvas);
+
+
+
+log("Running OCR...");
+
+
+
+const { data:{text} } = await Tesseract.recognize(
+
+canvas,
+
+"eng",
+
+{
+
+logger:m=>{
+
+if(m.status)
+
+log(m.status+" "+Math.round(m.progress*100)+"%");
+
+}
+
+}
+
+);
+
+
+
+log("OCR finished");
+
+
+
+let orders=parse(text);
+
+
+
+showOrders(orders);
+
+generateInsights(orders);
+
+
+
+log("Orders detected: "+orders.length);
+
+
+
+}catch(e){
+
+log("ERROR: "+e);
+
+}
+
+}
+
+</script>
+
+</body>
+</html>
